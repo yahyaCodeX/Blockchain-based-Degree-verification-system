@@ -1,19 +1,18 @@
 package com.decentralized.degree.vault.decentralizeddegreevault.dto;
 
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * DTO for degree verification response
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class VerifyDegreeResponse {
+@Entity
+public class DegreeRecord {
+    @Id
     private String degreeId;
-    private String status;
-    private String message;
     private String studentId;
     private String studentName;
     private String fatherName;
@@ -23,5 +22,4 @@ public class VerifyDegreeResponse {
     private String ipfsCid;
     private String issuerAddress;
     private long issueDate;
-    private boolean verified;
 }

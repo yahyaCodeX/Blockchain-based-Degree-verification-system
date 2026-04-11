@@ -14,5 +14,12 @@ public class TransactionResponse {
     private String transactionHash;
     private String status;
     private String message;
-}
+    private String issuerAddress;
 
+    public TransactionResponse(String transactionHash, String status, String message) {
+        this.transactionHash = transactionHash;
+        this.status = status;
+        this.message = message;
+        this.issuerAddress = null;
+    }
+}

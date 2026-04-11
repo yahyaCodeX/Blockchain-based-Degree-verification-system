@@ -4,7 +4,9 @@ import com.decentralized.degree.vault.decentralizeddegreevault.Service.DegreeVau
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.IssueDegreeRequest;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.TransactionResponse;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.VerifyDegreeResponse;
-import lombok.extern.slf4j.Slf4j;
+import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -12,11 +14,12 @@ import org.springframework.web.bind.annotation.*;
 /**
  * REST Controller for Degree Vault operations
  */
-@Slf4j
 @RestController
 @RequestMapping("/api/v1/degrees")
 @CrossOrigin(origins = "*", maxAge = 3600)
 public class DegreeVaultController {
+
+    private static final Logger log = LoggerFactory.getLogger(DegreeVaultController.class);
 
     private final DegreeVaultService degreeVaultService;
 
@@ -29,24 +32,20 @@ public class DegreeVaultController {
      * POST /api/v1/degrees/issue
      */
     @PostMapping("/issue")
-    public ResponseEntity<TransactionResponse> issueDegree(@RequestBody IssueDegreeRequest request) {
+    public ResponseEntity<TransactionResponse> issueDegree(@Valid @RequestBody IssueDegreeRequest request) {
         log.info("Received request to issue degree: {}", request.getDegreeId());
 
-        if (request.getDegreeId() == null || request.getDegreeId().isEmpty() ||
-            request.getStudentId() == null || request.getStudentId().isEmpty() ||
-            request.getDocumentHash() == null || request.getDocumentHash().isEmpty() ||
-            request.getIpfsCid() == null || request.getIpfsCid().isEmpty()) {
+        if (hasMissingIssueFields(request)) {
             return ResponseEntity.badRequest()
-                    .body(new TransactionResponse(null, "ERROR", "All fields are required"));
+                    .body(new TransactionResponse(null, "ERROR", "All required fields must be non-empty"));
         }
 
         TransactionResponse response = degreeVaultService.issueDegree(request);
 
         if ("SUCCESS".equals(response.getStatus())) {
             return ResponseEntity.ok(response);
-        } else {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
 
     /**
@@ -57,17 +56,32 @@ public class DegreeVaultController {
     public ResponseEntity<VerifyDegreeResponse> verifyDegree(@PathVariable String degreeId) {
         log.info("Received request to verify degree: {}", degreeId);
 
-        if (degreeId == null || degreeId.isEmpty()) {
-            return ResponseEntity.badRequest().build();
+        if (isBlank(degreeId)) {
+            return ResponseEntity.badRequest().body(new VerifyDegreeResponse(
+                    null,
+                    "INVALID_REQUEST",
+                    "degreeId path variable is required",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    false
+            ));
         }
 
         VerifyDegreeResponse response = degreeVaultService.verifyDegree(degreeId);
 
-        if (response.isVerified()) {
-            return ResponseEntity.ok(response);
-        } else {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        if ("ERROR".equals(response.getStatus())) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
         }
+
+        // NOT_FOUND is still a valid verify outcome, so return 200 with an explicit status/message.
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -95,5 +109,19 @@ public class DegreeVaultController {
     public ResponseEntity<String> health() {
         return ResponseEntity.ok("Degree Vault Backend is running");
     }
-}
 
+    private boolean hasMissingIssueFields(IssueDegreeRequest request) {
+        return isBlank(request.getDegreeId())
+                || isBlank(request.getStudentId())
+                || isBlank(request.getStudentName())
+                || isBlank(request.getFatherName())
+                || isBlank(request.getDepartment())
+                || isBlank(request.getCgpa())
+                || isBlank(request.getDocumentHash())
+                || isBlank(request.getIpfsCid());
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+}
