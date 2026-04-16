@@ -8,8 +8,10 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
  * REST Controller for Degree Vault operations
@@ -31,8 +33,10 @@ public class DegreeVaultController {
      * Issue a new degree
      * POST /api/v1/degrees/issue
      */
-    @PostMapping("/issue")
-    public ResponseEntity<TransactionResponse> issueDegree(@Valid @RequestBody IssueDegreeRequest request) {
+    @PostMapping(value = "/issue", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<TransactionResponse> issueDegree(
+            @RequestPart("file") MultipartFile file,
+            @RequestPart("data") @Valid IssueDegreeRequest request) {
         log.info("Received request to issue degree: {}", request.getDegreeId());
 
         if (hasMissingIssueFields(request)) {
@@ -40,7 +44,12 @@ public class DegreeVaultController {
                     .body(new TransactionResponse(null, "ERROR", "All required fields must be non-empty"));
         }
 
-        TransactionResponse response = degreeVaultService.issueDegree(request);
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest()
+                    .body(new TransactionResponse(null, "ERROR", "File must not be empty"));
+        }
+
+        TransactionResponse response = degreeVaultService.issueDegree(file, request);
 
         if ("SUCCESS".equals(response.getStatus())) {
             return ResponseEntity.ok(response);
@@ -52,8 +61,10 @@ public class DegreeVaultController {
      * Verify a degree
      * GET /api/v1/degrees/verify/{degreeId}
      */
-    @GetMapping("/verify/{degreeId}")
-    public ResponseEntity<VerifyDegreeResponse> verifyDegree(@PathVariable String degreeId) {
+    @PostMapping(value = "/verify/{degreeId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<VerifyDegreeResponse> verifyDegree(
+            @PathVariable("degreeId") String degreeId,
+            @RequestPart("file") MultipartFile file) {
         log.info("Received request to verify degree: {}", degreeId);
 
         if (isBlank(degreeId)) {
@@ -70,11 +81,35 @@ public class DegreeVaultController {
                     null,
                     null,
                     0,
-                    false
+                    false,
+                    false,
+                    false,
+                    "Invalid Request"
             ));
         }
 
-        VerifyDegreeResponse response = degreeVaultService.verifyDegree(degreeId);
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body(new VerifyDegreeResponse(
+                    degreeId,
+                    "INVALID_REQUEST",
+                    "File must not be empty",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    false,
+                    false,
+                    false,
+                    "No file provided for verification."
+            ));
+        }
+
+        VerifyDegreeResponse response = degreeVaultService.verifyDegree(degreeId, file);
 
         if ("ERROR".equals(response.getStatus())) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
@@ -116,9 +151,7 @@ public class DegreeVaultController {
                 || isBlank(request.getStudentName())
                 || isBlank(request.getFatherName())
                 || isBlank(request.getDepartment())
-                || isBlank(request.getCgpa())
-                || isBlank(request.getDocumentHash())
-                || isBlank(request.getIpfsCid());
+                || isBlank(request.getCgpa());
     }
 
     private boolean isBlank(String value) {

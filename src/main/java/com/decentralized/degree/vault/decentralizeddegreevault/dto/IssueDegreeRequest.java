@@ -37,11 +37,7 @@ public class IssueDegreeRequest {
     @NotBlank(message = "CGPA cannot be blank")
     private String cgpa;
 
-    @NotNull(message = "Document hash cannot be null")
-    @NotBlank(message = "Document hash cannot be blank")
     private String documentHash;
 
-    @NotNull(message = "IPFS CID cannot be null")
-    @NotBlank(message = "IPFS CID cannot be blank")
     private String ipfsCid;
 }

@@ -66,7 +66,19 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.github.ipfs</groupId>
+            <artifactId>java-ipfs-http-client</artifactId>
+            <version>1.3.3</version>
+        </dependency>
     </dependencies>
+
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>
@@ -95,6 +107,7 @@
                     </excludes>
                 </configuration>
             </plugin>
+
             <plugin>
                 <groupId>org.web3j</groupId>
                 <artifactId>web3j-maven-plugin</artifactId>
@@ -108,15 +121,33 @@
                         </goals>
                         <configuration>
                             <packageName>com.example.contract</packageName>
-                            <soliditySourceFiles>
+                            <sourceDestination>${project.build.directory}/generated-sources/web3j</sourceDestination>
+                            <abiSourceFiles>
                                 <directory>src/main/resources/contracts</directory>
                                 <includes>
-                                    <include>**/*.sol</include>
+                                    <include>**/*.abi</include>
                                 </includes>
-                            </soliditySourceFiles>
-                            <outputDirectory>
-                                <java>D:/FYP/Decentralized Degree Vault using blockchain/Decentralized degree vault backend/target/generated-sources/web3j</java>
-                            </outputDirectory>
+                            </abiSourceFiles>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>add-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/web3j</source>
+                            </sources>
                         </configuration>
                     </execution>
                 </executions>

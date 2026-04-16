@@ -24,4 +24,7 @@ public class VerifyDegreeResponse {
     private String issuerAddress;
     private long issueDate;
     private boolean verified;
+    private boolean authentic;
+    private boolean tampered;
+    private String integrityMessage;
 }
