@@ -34,3 +34,12 @@ build/
 
 ### Environment Variables ###
 .env
+
+*.csv
+HELP.md
+BACKEND_API_DOCS.md
+CONFIGURATION.md
+EXAMPLES.md
+IMPLEMENTATION_SUMMARY.md
+QUICK_START.md
+TESTING.md
