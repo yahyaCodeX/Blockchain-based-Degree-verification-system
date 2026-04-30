@@ -7,9 +7,9 @@ import java.security.NoSuchAlgorithmException;
 
 public class FileHashingUtil {
 
-    public static String calculateSHA256(MultipartFile file) throws IOException, NoSuchAlgorithmException {
+    public static String calculateSHA256(byte[] fileBytes) throws NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hashBytes = digest.digest(file.getBytes());
+        byte[] hashBytes = digest.digest(fileBytes);
         StringBuilder hexString = new StringBuilder(2 * hashBytes.length);
         for (byte b : hashBytes) {
             String hex = Integer.toHexString(0xff & b);
@@ -19,6 +19,10 @@ public class FileHashingUtil {
             hexString.append(hex);
         }
         return hexString.toString();
+    }
+
+    public static String calculateSHA256(MultipartFile file) throws IOException, NoSuchAlgorithmException {
+        return calculateSHA256(file.getBytes());
     }
 }
 
