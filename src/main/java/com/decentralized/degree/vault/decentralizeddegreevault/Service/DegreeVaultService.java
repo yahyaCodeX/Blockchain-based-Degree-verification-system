@@ -391,7 +391,8 @@ public class DegreeVaultService {
      * Processes rows in chunks (up to maxBatchSize) using the smart contract's
      * issueBatch() function. Each chunk is a single blockchain transaction.
      *
-     * @param file the uploaded CSV file
+     * @param csvFile the uploaded CSV file
+     * @param zipFile the uploaded ZIP file containing degree PDFs
      * @return CompletableFuture containing the batch ID for status tracking
      */
     // KAFKA-READY: In a Kafka architecture, this method would:
@@ -400,7 +401,7 @@ public class DegreeVaultService {
     // 3. Multiple Kafka consumers can then process rows in parallel across instances
     // 4. The @Async annotation would be removed since Kafka handles async naturally
     @Async("batchExecutor")
-    public CompletableFuture<String> issueBatchAsync(String batchId,MultipartFile csvFile, MultipartFile zipFile) {
+    public CompletableFuture<String> issueBatchAsync(String batchId, Path csvFile, Path zipFile) {
 
         log.info("Starting batch processing with batchId: {}", batchId);
 
@@ -497,6 +498,16 @@ public class DegreeVaultService {
                 } catch (Exception e) {
                     log.error("Failed to delete temp directory: {}", e.getMessage());
                 }
+            }
+            try {
+                if (csvFile != null) Files.deleteIfExists(csvFile);
+            } catch (Exception e) {
+                log.error("Failed to delete temp csv file: {}", e.getMessage());
+            }
+            try {
+                if (zipFile != null) Files.deleteIfExists(zipFile);
+            } catch (Exception e) {
+                log.error("Failed to delete temp zip file: {}", e.getMessage());
             }
         }
 
@@ -632,14 +643,14 @@ public class DegreeVaultService {
      * Expected CSV columns: degreeId, studentId, documentHash, ipfsCid
      * The first row is treated as a header and skipped.
      *
-     * @param file the uploaded CSV MultipartFile
+     * @param file the uploaded CSV Path
      * @return list of parsed degree requests
      * @throws Exception if the file cannot be read
      */
-    private List<IssueDegreeRequest> parseCsvFile(MultipartFile file) throws Exception {
+    private List<IssueDegreeRequest> parseCsvFile(Path file) throws Exception {
         List<IssueDegreeRequest> degrees = new ArrayList<>();
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream()))) {
+        try (BufferedReader reader = Files.newBufferedReader(file)) {
             String line;
             boolean isHeader = true;
 
@@ -678,9 +689,9 @@ public class DegreeVaultService {
         return degrees;
     }
 
-    private Path unzipToTempDir(MultipartFile zipFile, String batchId) throws Exception {
+    private Path unzipToTempDir(Path zipFile, String batchId) throws Exception {
         Path tempDir = Files.createTempDirectory("batch_" + batchId);
-        try (ZipInputStream zis = new ZipInputStream(zipFile.getInputStream())) {
+        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipFile))) {
             ZipEntry zipEntry = zis.getNextEntry();
             while (zipEntry != null) {
                 if (!zipEntry.isDirectory()) {

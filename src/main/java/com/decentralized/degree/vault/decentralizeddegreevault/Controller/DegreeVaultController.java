@@ -171,7 +171,8 @@ public class DegreeVaultController {
      * Expected CSV format (with header):
      * degreeId,studentId,documentHash,ipfsCid
      *
-     * @param file the CSV file containing degree records
+     * @param csvFile the CSV file containing degree records
+     * @param zipFile the ZIP file containing degree PDFs
      * @return 202 Accepted with batchId and status polling URL
      */
     // KAFKA-READY: In a Kafka architecture, this endpoint would:
@@ -211,8 +212,14 @@ public class DegreeVaultController {
         }
         String batchId= UUID.randomUUID().toString();
         try {
+            java.nio.file.Path tempCsv = java.nio.file.Files.createTempFile("batch_csv_" + batchId, ".csv");
+            csvFile.transferTo(tempCsv.toFile());
+
+            java.nio.file.Path tempZip = java.nio.file.Files.createTempFile("batch_zip_" + batchId, ".zip");
+            zipFile.transferTo(tempZip.toFile());
+
             // Fire and forget — async processing starts in background
-            CompletableFuture<String> futureId = degreeVaultService.issueBatchAsync(batchId,csvFile, zipFile);
+            CompletableFuture<String> futureId = degreeVaultService.issueBatchAsync(batchId, tempCsv, tempZip);
 
             Map<String, Object> response = new HashMap<>();
             response.put("batchId", batchId);
