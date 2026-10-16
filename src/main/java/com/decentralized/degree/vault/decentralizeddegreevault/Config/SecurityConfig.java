@@ -56,7 +56,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/**").permitAll()
 
                         // Degree verification — employers verify without login
-                        .requestMatchers(HttpMethod.POST, "/api/v1/degrees/verify/**").permitAll()
+                        .requestMatchers("/api/v1/degrees/verify", "/api/v1/degrees/verify/**").permitAll()
 
                         // Health check
                         .requestMatchers("/api/v1/degrees/health").permitAll()

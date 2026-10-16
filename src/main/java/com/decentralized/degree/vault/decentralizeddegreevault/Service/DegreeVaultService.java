@@ -6,11 +6,9 @@ import com.decentralized.degree.vault.decentralizeddegreevault.dto.VerifyDegreeR
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.DegreeRecord;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.BatchUploadResult;
 import com.decentralized.degree.vault.decentralizeddegreevault.util.FileHashingUtil;
+import com.decentralized.degree.vault.decentralizeddegreevault.util.QrCodeUtil;
 import com.decentralized.degree.vault.decentralizeddegreevault.repository.DegreeRecordRepository;
 import com.example.contract.DegreeVault;
-import io.ipfs.api.IPFS;
-import io.ipfs.api.NamedStreamable;
-import io.ipfs.api.MerkleNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
@@ -19,18 +17,21 @@ import org.springframework.web.multipart.MultipartFile;
 import org.web3j.crypto.Credentials;
 import org.web3j.protocol.Web3j;
 import org.web3j.protocol.core.RemoteFunctionCall;
-import org.web3j.tuples.generated.Tuple4;
+import org.web3j.tuples.generated.Tuple8;
 import org.web3j.tx.exceptions.ContractCallException;
 import org.web3j.tx.gas.ContractGasProvider;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -58,8 +59,9 @@ public class DegreeVaultService {
     private final String contractAddress;
     private final String privateKey;
     private final DegreeRecordRepository degreeRecordRepository;
-    private final IPFS ipfs;
+    private final PinataService pinataService;
     private final BatchJobTracker batchJobTracker;
+    private final String verificationBaseUrl;
 
     @Value("${batch.max-size:100}")
     private int maxBatchSize;
@@ -70,246 +72,200 @@ public class DegreeVaultService {
             @Value("${contract.address}") String contractAddress,
             @Value("${wallet.private-key}") String privateKey,
             DegreeRecordRepository degreeRecordRepository,
-            IPFS ipfs,
-            BatchJobTracker batchJobTracker
+            PinataService pinataService,
+            BatchJobTracker batchJobTracker,
+            @Value("${verification.base-url}") String verificationBaseUrl
     ) {
         this.web3j = web3j;
         this.gasProvider = gasProvider;
         this.contractAddress = contractAddress;
         this.privateKey = privateKey;
         this.degreeRecordRepository = degreeRecordRepository;
-        this.ipfs = ipfs;
+        this.pinataService = pinataService;
         this.batchJobTracker = batchJobTracker;
+        this.verificationBaseUrl = verificationBaseUrl;
     }
 
     /**
-     * Issues a new degree to the blockchain
+     * Issues a new GUCI-based degree to the blockchain.
      */
     public TransactionResponse issueDegree(MultipartFile file, IssueDegreeRequest request) {
         try {
-            // Fast duplicate check to avoid unnecessary on-chain write attempts.
-            if (degreeRecordRepository.existsById(request.getDegreeId())) {
-                return new TransactionResponse(
-                        null,
-                        "FAILED",
-                        "Degree already exists",
-                        null
-                );
-            }
+            String globalCredentialId = buildGlobalCredentialId(request.getUniversityCode(), request.getRollNo());
+            String dataHash = calculateDataHash(request.getUniversityCode(), request.getRollNo(), request.getStudentName(), request.getCgpa());
 
-            // Create credentials from private key
             Credentials credentials = Credentials.create(privateKey);
             String issuerAddress = credentials.getAddress();
 
-            // Calculate file hash
-            String fileHash = FileHashingUtil.calculateSHA256(file);
-            request.setDocumentHash(fileHash);
-
-            // Upload to IPFS
-            NamedStreamable.ByteArrayWrapper byteStream = new NamedStreamable.ByteArrayWrapper(file.getOriginalFilename(), file.getBytes());
-            java.util.List<MerkleNode> response = ipfs.add(byteStream);
-            String ipfsCid = response.get(0).hash.toBase58();
+            String ipfsCid = pinataService.uploadFile(file);
+            request.setDocumentHash(dataHash);
             request.setIpfsCid(ipfsCid);
 
-            // Load the smart contract
-            DegreeVault contract = DegreeVault.load(
-                    contractAddress,
-                    web3j,
-                    credentials,
-                    gasProvider
-            );
+            DegreeVault contract = DegreeVault.load(contractAddress, web3j, credentials, gasProvider);
 
-            log.info("Issuing degree: {} for student: {}", request.getDegreeId(), request.getStudentId());
+            if (degreeRecordRepository.existsById(globalCredentialId)) {
+                return new TransactionResponse(null, "FAILED", "Degree already exists", issuerAddress, null, null);
+            }
 
-            // Send only on-chain fields required by the smart contract.
-            RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
-                    contract.issueDegree(
-                            request.getDegreeId(),
-                            request.getStudentId(),
-                            request.getDocumentHash(),
-                            request.getIpfsCid()
-                    );
+            Optional<Tuple8<String, String, String, String, String, String, String, BigInteger>> existingDegree =
+                    findDegreeOnChain(contract, globalCredentialId);
+            if (existingDegree.isPresent()) {
+                Tuple8<String, String, String, String, String, String, String, BigInteger> onChain = existingDegree.get();
+                if (!dataHash.equals(onChain.component6())) {
+                    return new TransactionResponse(null, "FAILED", "Degree already exists on blockchain with a different data hash", issuerAddress, null, null);
+                }
 
-            // Send the transaction and wait for receipt
-            var transactionReceipt = txFunction.send();
-
-            if (transactionReceipt.isStatusOK()) {
-                log.info("Degree issued successfully. Transaction hash: {}", transactionReceipt.getTransactionHash());
-
-                // Persist full metadata off-chain only after successful blockchain write.
                 DegreeRecord record = new DegreeRecord(
-                        request.getDegreeId(),
-                        request.getStudentId(),
+                        globalCredentialId,
+                        request.getUniversityCode(),
+                        request.getRollNo(),
                         request.getStudentName(),
-                        request.getFatherName(),
-                        request.getDepartment(),
                         request.getCgpa(),
-                        request.getDocumentHash(),
-                        request.getIpfsCid(),
+                        dataHash,
+                        ipfsCid,
                         issuerAddress,
-                        System.currentTimeMillis() / 1000 // Approximate issue date
+                        onChain.component8().longValue()
                 );
                 degreeRecordRepository.save(record);
 
+                String verificationUrl = buildVerificationUrl(globalCredentialId);
+                return new TransactionResponse(null, "SUCCESS", "Degree already existed on blockchain; metadata synced", issuerAddress, verificationUrl, generateQrCode(verificationUrl));
+            }
+
+            log.info("Issuing degree: {} for university: {}", globalCredentialId, request.getUniversityCode());
+
+            RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
+                    contract.issueDegree(
+                            globalCredentialId,
+                            request.getUniversityCode(),
+                            request.getRollNo(),
+                            request.getStudentName(),
+                            request.getCgpa(),
+                            dataHash
+                    );
+
+            var transactionReceipt = txFunction.send();
+            if (transactionReceipt.isStatusOK()) {
+                DegreeRecord record = new DegreeRecord(
+                        globalCredentialId,
+                        request.getUniversityCode(),
+                        request.getRollNo(),
+                        request.getStudentName(),
+                        request.getCgpa(),
+                        dataHash,
+                        ipfsCid,
+                        issuerAddress,
+                        System.currentTimeMillis() / 1000
+                );
+                record.setStudentId(request.getStudentId());
+                record.setFatherName(request.getFatherName());
+                record.setDepartment(request.getDepartment());
+                degreeRecordRepository.save(record);
+
+                String verificationUrl = buildVerificationUrl(globalCredentialId);
                 return new TransactionResponse(
                         transactionReceipt.getTransactionHash(),
                         "SUCCESS",
                         "Degree issued successfully",
-                        issuerAddress
-                );
-            } else {
-                log.error("Transaction failed with status: {}", transactionReceipt.getStatus());
-                return new TransactionResponse(
-                        transactionReceipt.getTransactionHash(),
-                        "FAILED",
-                        "Transaction failed",
-                        null
+                        issuerAddress,
+                        verificationUrl,
+                        generateQrCode(verificationUrl)
                 );
             }
 
+            return new TransactionResponse(transactionReceipt.getTransactionHash(), "FAILED", "Transaction failed", issuerAddress, null, null);
         } catch (Exception e) {
             log.error("Error issuing degree: {}", e.getMessage(), e);
-            return new TransactionResponse(
-                    null,
-                    "ERROR",
-                    "Error issuing degree: " + e.getMessage(),
-                    null
-            );
+            return new TransactionResponse(null, "ERROR", "Error issuing degree: " + e.getMessage(), null, null, null);
+        }
+    }
+
+    private Optional<Tuple8<String, String, String, String, String, String, String, BigInteger>> findDegreeOnChain(DegreeVault contract, String globalCredentialId) {
+        try {
+            RemoteFunctionCall<Tuple8<String, String, String, String, String, String, String, BigInteger>> txFunction = contract.verifyDegree(globalCredentialId);
+            return Optional.of(txFunction.send());
+        } catch (Exception ex) {
+            if (ex instanceof ContractCallException && isDegreeNotFoundRevert((ContractCallException) ex)) {
+                return Optional.empty();
+            }
+            throw new RuntimeException("Failed to check whether degree exists on-chain: " + ex.getMessage(), ex);
         }
     }
 
     /**
-     * Verifies a degree on the blockchain using Total Integrity logic.
-     * Queries the contract by degreeId, then compares the uploaded file's
-     * SHA-256 hash against the on-chain document hash.
+     * Verifies a degree using its GUCI.
      */
-    public VerifyDegreeResponse verifyDegree(String degreeId, MultipartFile file) {
+    public VerifyDegreeResponse verifyDegree(String globalCredentialId, MultipartFile file) {
         try {
-            // Step 1: Calculate SHA-256 hash of the uploaded file
-            String fileHash = FileHashingUtil.calculateSHA256(file);
-
-            // Step 2: Query the smart contract by degreeId
             Credentials credentials = Credentials.create(privateKey);
-            DegreeVault contract = DegreeVault.load(
-                    contractAddress,
-                    web3j,
-                    credentials,
-                    gasProvider
-            );
+            DegreeVault contract = DegreeVault.load(contractAddress, web3j, credentials, gasProvider);
 
-            log.info("Verifying degree on-chain for degreeId: {}", degreeId);
+            RemoteFunctionCall<Tuple8<String, String, String, String, String, String, String, BigInteger>> txFunction =
+                    contract.verifyDegree(globalCredentialId);
 
-            RemoteFunctionCall<Tuple4<String, String, String, BigInteger>> txFunction =
-                    contract.verifyDegree(degreeId);
-            Tuple4<String, String, String, BigInteger> result;
+            Tuple8<String, String, String, String, String, String, String, BigInteger> result;
             try {
                 result = txFunction.send();
             } catch (ContractCallException ex) {
                 if (isDegreeNotFoundRevert(ex)) {
-                    log.info("Degree {} not found on-chain: {}", degreeId, ex.getMessage());
-                    return buildUnverifiedResponse(degreeId, "Degree not found on blockchain");
+                    return buildUnverifiedResponse(globalCredentialId, "Degree not found on blockchain");
                 }
                 throw ex;
             }
 
-            // Step 3: Check if the degree exists on-chain (issueDate > 0)
-            // Tuple4 components: (studentId, docHash, ipfsCid, issueDate)
-            String studentId = result.component1();
-            String onChainDocHash = result.component2();
-            String ipfsCid = result.component3();
-            long issueDateLong = result.component4().longValue();
-            boolean existsOnChain = issueDateLong > 0;
+            String onChainGuci = result.component1();
+            String universityCode = result.component2();
+            String rollNo = result.component3();
+            String studentName = result.component4();
+            String cgpa = result.component5();
+            String dataHash = result.component6();
+            String issuerAddress = result.component7();
+            long issueDateLong = result.component8().longValue();
 
-            if (!existsOnChain) {
-                return buildUnverifiedResponse(degreeId, "Degree not found on blockchain");
-            }
-
-            // Step 4 & 5: Crucial Hash Comparison — Total Integrity check
-            boolean verified;
-            boolean authentic;
-            boolean tampered;
-            String status;
-            String integrityMessage;
-
-            if (fileHash.equals(onChainDocHash)) {
-                // Hashes match exactly — document is authentic
-                status = "VERIFIED";
-                verified = true;
-                authentic = true;
-                tampered = false;
-                integrityMessage = "Document is authentic. File hash matches exactly with the blockchain record.";
-            } else {
-                // Hashes do NOT match — document has been tampered with
-                status = "TAMPERED";
-                verified = false;
-                authentic = false;
-                tampered = true;
-                integrityMessage = "CRITICAL WARNING: The uploaded document has been tampered with and does not match the blockchain record.";
-                log.warn("TAMPER DETECTED for degree {}: uploaded hash [{}] vs on-chain hash [{}]",
-                        degreeId, fileHash, onChainDocHash);
-            }
-
-            // Step 6: Fetch metadata from database
-            String issuerAddress = resolveIssuerAddress(contract, credentials);
-            Optional<DegreeRecord> metadataRecord = degreeRecordRepository.findById(degreeId);
-
-            String studentName = metadataRecord.map(DegreeRecord::getStudentName).orElse("N/A");
+            Optional<DegreeRecord> metadataRecord = degreeRecordRepository.findById(globalCredentialId);
             String fatherName = metadataRecord.map(DegreeRecord::getFatherName).orElse("N/A");
             String department = metadataRecord.map(DegreeRecord::getDepartment).orElse("N/A");
-            String cgpa = metadataRecord.map(DegreeRecord::getCgpa).orElse("N/A");
+            String ipfsCid = metadataRecord.map(DegreeRecord::getIpfsCid).orElse("N/A");
 
-            String message;
-            if (verified) {
-                message = metadataRecord.isPresent()
-                        ? "Degree verified on blockchain and metadata loaded from database"
-                        : "Degree verified on blockchain. Metadata is not available in database yet";
-            } else {
-                message = "Document integrity check FAILED. The uploaded file does not match the blockchain record.";
-            }
+            boolean authentic = dataHash.equals(metadataRecord.map(DegreeRecord::getDataHash).orElse(dataHash));
+            String status = authentic ? "VERIFIED" : "TAMPERED";
+            String message = authentic ? "Degree verified successfully" : "Document integrity check failed";
+            String integrityMessage = authentic
+                    ? "Credential is authentic. Verified by issuing university on blockchain."
+                    : "Warning: Stored data does not match the official blockchain record.";
 
-            if (metadataRecord.isEmpty()) {
-                log.warn("Degree {} exists on-chain but metadata is missing in database", degreeId);
-            }
+            String verificationUrl = buildVerificationUrl(globalCredentialId);
+            String qrBase64 = authentic ? generateQrCode(verificationUrl) : null;
 
-            return new VerifyDegreeResponse(
-                    degreeId,
-                    status,
-                    message,
-                    studentId,
-                    studentName,
-                    fatherName,
-                    department,
-                    cgpa,
-                    fileHash,
-                    ipfsCid,
-                    issuerAddress,
-                    issueDateLong,
-                    verified,
-                    authentic,
-                    tampered,
-                    integrityMessage
-            );
-
+            return VerifyDegreeResponse.builder()
+                    .globalCredentialId(globalCredentialId)
+                    .universityCode(universityCode)
+                    .rollNo(rollNo)
+                    .studentName(studentName)
+                    .fatherName(fatherName)
+                    .department(department)
+                    .cgpa(cgpa)
+                    .dataHash(dataHash)
+                    .ipfsCid(ipfsCid)
+                    .issuerAddress(issuerAddress)
+                    .issueDate(issueDateLong)
+                    .status(status)
+                    .message(message)
+                    .verified(true)
+                    .authentic(authentic)
+                    .tampered(!authentic)
+                    .integrityMessage(integrityMessage)
+                    .verificationUrl(verificationUrl)
+                    .qrCodeBase64(qrBase64)
+                    .build();
         } catch (Exception e) {
-            log.error("Error verifying degree {}: {}", degreeId, e.getMessage(), e);
-            return new VerifyDegreeResponse(
-                    degreeId,
-                    "ERROR",
-                    "Verification failed due to blockchain/network issue",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    0,
-                    false,
-                    false,
-                    false,
-                    "Error during verification: " + e.getMessage()
-            );
+            log.error("Error verifying degree {}: {}", globalCredentialId, e.getMessage(), e);
+            return VerifyDegreeResponse.builder()
+                    .globalCredentialId(globalCredentialId)
+                    .status("ERROR")
+                    .message("Verification failed: " + e.getMessage())
+                    .integrityMessage("Error during verification: " + e.getMessage())
+                    .build();
         }
     }
 
@@ -322,25 +278,49 @@ public class DegreeVaultService {
         return normalized.contains("degree record not found") || normalized.contains("record not found");
     }
 
-    private VerifyDegreeResponse buildUnverifiedResponse(String degreeId, String message) {
-        return new VerifyDegreeResponse(
-                degreeId,
-                "NOT_FOUND",
-                message,
-                null,
-                "N/A",
-                "N/A",
-                "N/A",
-                "N/A",
-                null,
-                null,
-                null,
-                0,
-                false,
-                false,
-                false,
-                "Degree record does not exist on the blockchain."
-        );
+    private VerifyDegreeResponse buildUnverifiedResponse(String globalCredentialId, String message) {
+        return VerifyDegreeResponse.builder()
+                .globalCredentialId(globalCredentialId)
+                .status("NOT_FOUND")
+                .message(message)
+                .integrityMessage("Degree record does not exist on the blockchain.")
+                .build();
+    }
+
+    private String buildGlobalCredentialId(String universityCode, String rollNo) {
+        return universityCode.trim() + "-" + rollNo.trim();
+    }
+
+    private String buildVerificationUrl(String globalCredentialId) {
+        return verificationBaseUrl + globalCredentialId;
+    }
+
+    private String generateQrCode(String verificationUrl) {
+        try {
+            return QrCodeUtil.toBase64Png(verificationUrl, 220, 220);
+        } catch (Exception e) {
+            log.warn("Failed to generate QR code for {}: {}", verificationUrl, e.getMessage());
+            return null;
+        }
+    }
+
+    private String calculateDataHash(String universityCode, String rollNo, String studentName, String cgpa) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            String payload = universityCode.trim() + "|" + rollNo.trim() + "|" + studentName.trim() + "|" + cgpa.trim();
+            byte[] hashBytes = digest.digest(payload.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder(2 * hashBytes.length);
+            for (byte b : hashBytes) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) {
+                    hexString.append('0');
+                }
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm is not available", e);
+        }
     }
 
     private String resolveIssuerAddress(DegreeVault contract, Credentials credentials) {
@@ -386,7 +366,7 @@ public class DegreeVaultService {
      * Asynchronously processes a CSV file containing batch degree issuance requests.
      * <p>
      * CSV format (with header row):
-     * degreeId,studentId,documentHash,ipfsCid
+     * universityCode,rollNo,studentName,cgpa,studentId,fatherName,department
      * <p>
      * Processes rows in chunks (up to maxBatchSize) using the smart contract's
      * issueBatch() function. Each chunk is a single blockchain transaction.
@@ -436,7 +416,7 @@ public class DegreeVaultService {
                 if (!Files.exists(pdfPath)) {
                     BatchUploadResult errorResult = new BatchUploadResult();
                     errorResult.setRow(rowCounter);
-                    errorResult.setDegreeId(request.getDegreeId());
+                    errorResult.setRollNo(request.getRollNo());
                     errorResult.setStudentId(request.getStudentId());
                     errorResult.setStatus("FAILED");
                     errorResult.setError("Missing PDF file in ZIP: " + expectedFileName);
@@ -450,9 +430,7 @@ public class DegreeVaultService {
                     String fileHash = FileHashingUtil.calculateSHA256(fileBytes);
                     request.setDocumentHash(fileHash);
 
-                    NamedStreamable.ByteArrayWrapper byteStream = new NamedStreamable.ByteArrayWrapper(expectedFileName, fileBytes);
-                    List<MerkleNode> response = ipfs.add(byteStream);
-                    String ipfsCid = response.get(0).hash.toBase58();
+                    String ipfsCid = pinataService.uploadBytes(fileBytes, expectedFileName);
                     request.setIpfsCid(ipfsCid);
 
                     chunk.add(request);
@@ -466,7 +444,7 @@ public class DegreeVaultService {
                 } catch (Exception e) {
                     BatchUploadResult errorResult = new BatchUploadResult();
                     errorResult.setRow(rowCounter);
-                    errorResult.setDegreeId(request.getDegreeId());
+                    errorResult.setRollNo(request.getRollNo());
                     errorResult.setStudentId(request.getStudentId());
                     errorResult.setStatus("FAILED");
                     errorResult.setError("Failed to process PDF: " + e.getMessage());
@@ -534,13 +512,13 @@ public class DegreeVaultService {
             );
 
             // Build parallel arrays for the smart contract call
-            List<String> degreeIds = new ArrayList<>();
+            List<String> rollNos = new ArrayList<>();
             List<String> studentIds = new ArrayList<>();
             List<String> docHashes = new ArrayList<>();
             List<String> ipfsCids = new ArrayList<>();
 
             for (IssueDegreeRequest deg : degrees) {
-                degreeIds.add(deg.getDegreeId());
+                rollNos.add(deg.getRollNo());
                 studentIds.add(deg.getStudentId());
                 docHashes.add(deg.getDocumentHash());
                 ipfsCids.add(deg.getIpfsCid());
@@ -550,7 +528,7 @@ public class DegreeVaultService {
 
             // Call the issueBatch() function on the smart contract
             RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
-                    contract.issueBatch(degreeIds, studentIds, docHashes, ipfsCids);
+                    contract.issueBatch(rollNos, studentIds, docHashes, ipfsCids);
 
             var transactionReceipt = txFunction.send();
 
@@ -603,7 +581,7 @@ public class DegreeVaultService {
 
             RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
                     contract.issueDegree(
-                            request.getDegreeId(),
+                            request.getRollNo(),
                             request.getStudentId(),
                             request.getDocumentHash(),
                             request.getIpfsCid()
@@ -640,7 +618,7 @@ public class DegreeVaultService {
 
     /**
      * Parses a CSV file into a list of IssueDegreeRequest objects.
-     * Expected CSV columns: degreeId, studentId, documentHash, ipfsCid
+     * Expected CSV columns: universityCode, rollNo, studentName, cgpa, studentId, fatherName, department
      * The first row is treated as a header and skipped.
      *
      * @param file the uploaded CSV Path
@@ -674,7 +652,7 @@ public class DegreeVaultService {
                 }
 
                 IssueDegreeRequest request = new IssueDegreeRequest();
-                request.setDegreeId(columns[0].trim());
+                request.setRollNo(columns[0].trim());
                 request.setStudentId(columns[1].trim());
                 request.setStudentName(columns[2].trim());
                 request.setFatherName(columns[3].trim());
@@ -715,7 +693,7 @@ public class DegreeVaultService {
                 int row = chunkRows.get(i);
                 BatchUploadResult result = new BatchUploadResult();
                 result.setRow(row);
-                result.setDegreeId(deg.getDegreeId());
+                result.setRollNo(deg.getRollNo());
                 result.setStudentId(deg.getStudentId());
                 result.setProcessedAt(LocalDateTime.now());
 
@@ -738,7 +716,7 @@ public class DegreeVaultService {
                 int row = chunkRows.get(i);
                 BatchUploadResult result = new BatchUploadResult();
                 result.setRow(row);
-                result.setDegreeId(deg.getDegreeId());
+                result.setRollNo(deg.getRollNo());
                 result.setStudentId(deg.getStudentId());
                 result.setProcessedAt(LocalDateTime.now());
 
@@ -767,20 +745,22 @@ public class DegreeVaultService {
     private void saveDegreeToDatabase(IssueDegreeRequest request, String issuerAddress) {
         try {
             DegreeRecord record = new DegreeRecord(
-                    request.getDegreeId(),
-                    request.getStudentId(),
+                    buildGlobalCredentialId("LEGACY", request.getRollNo()),
+                    "LEGACY",
+                    request.getRollNo(),
                     request.getStudentName(),
-                    request.getFatherName(),
-                    request.getDepartment(),
                     request.getCgpa(),
                     request.getDocumentHash(),
                     request.getIpfsCid(),
                     issuerAddress,
                     System.currentTimeMillis() / 1000 // Approximate issue date
             );
+            record.setStudentId(request.getStudentId());
+            record.setFatherName(request.getFatherName());
+            record.setDepartment(request.getDepartment());
             degreeRecordRepository.save(record);
         } catch (Exception e) {
-            log.error("Failed to save degree metadata to DB for degree {}: {}", request.getDegreeId(), e.getMessage());
+            log.error("Failed to save degree metadata to DB for roll number {}: {}", request.getRollNo(), e.getMessage());
         }
     }
 
@@ -832,3 +812,5 @@ public class DegreeVaultService {
         }
     }
 }
+
+

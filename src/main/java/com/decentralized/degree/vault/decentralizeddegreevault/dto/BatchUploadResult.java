@@ -17,8 +17,8 @@ public class BatchUploadResult {
     /** The row number in the CSV file (1-indexed, excluding header) */
     private int row;
 
-    /** The degree ID from the CSV row */
-    private String degreeId;
+    /** The roll number from the CSV row */
+    private String rollNo;
 
     /** The student ID from the CSV row */
     private String studentId;

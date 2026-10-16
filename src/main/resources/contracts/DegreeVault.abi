@@ -35,20 +35,26 @@
       {
         "indexed": true,
         "internalType": "string",
-        "name": "degreeId",
+        "name": "globalCredentialId",
         "type": "string"
       },
       {
         "indexed": false,
         "internalType": "string",
-        "name": "studentId",
+        "name": "universityCode",
         "type": "string"
       },
       {
         "indexed": false,
         "internalType": "string",
-        "name": "documentHash",
+        "name": "rollNo",
         "type": "string"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "issuer",
+        "type": "address"
       }
     ],
     "name": "DegreeIssued",
@@ -58,22 +64,32 @@
     "inputs": [
       {
         "internalType": "string[]",
-        "name": "_degreeIds",
+        "name": "_globalCredentialIds",
         "type": "string[]"
       },
       {
         "internalType": "string[]",
-        "name": "_studentIds",
+        "name": "_universityCodes",
         "type": "string[]"
       },
       {
         "internalType": "string[]",
-        "name": "_docHashes",
+        "name": "_rollNos",
         "type": "string[]"
       },
       {
         "internalType": "string[]",
-        "name": "_ipfsCids",
+        "name": "_studentNames",
+        "type": "string[]"
+      },
+      {
+        "internalType": "string[]",
+        "name": "_cgpas",
+        "type": "string[]"
+      },
+      {
+        "internalType": "string[]",
+        "name": "_dataHashes",
         "type": "string[]"
       }
     ],
@@ -86,22 +102,32 @@
     "inputs": [
       {
         "internalType": "string",
-        "name": "_degreeId",
+        "name": "_globalCredentialId",
         "type": "string"
       },
       {
         "internalType": "string",
-        "name": "_studentId",
+        "name": "_universityCode",
         "type": "string"
       },
       {
         "internalType": "string",
-        "name": "_docHash",
+        "name": "_rollNo",
         "type": "string"
       },
       {
         "internalType": "string",
-        "name": "_ipfsCid",
+        "name": "_studentName",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_cgpa",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_dataHash",
         "type": "string"
       }
     ],
@@ -166,7 +192,7 @@
     "inputs": [
       {
         "internalType": "string",
-        "name": "_degreeId",
+        "name": "_globalCredentialId",
         "type": "string"
       }
     ],
@@ -174,22 +200,42 @@
     "outputs": [
       {
         "internalType": "string",
-        "name": "studentId",
+        "name": "globalCredentialId",
         "type": "string"
       },
       {
         "internalType": "string",
-        "name": "docHash",
+        "name": "universityCode",
         "type": "string"
       },
       {
         "internalType": "string",
-        "name": "ipfsCid",
+        "name": "rollNo",
         "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "studentName",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "cgpa",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "dataHash",
+        "type": "string"
+      },
+      {
+        "internalType": "address",
+        "name": "issuer",
+        "type": "address"
       },
       {
         "internalType": "uint256",
-        "name": "date",
+        "name": "issueDate",
         "type": "uint256"
       }
     ],

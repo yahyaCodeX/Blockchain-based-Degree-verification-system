@@ -1,25 +1,25 @@
 package com.decentralized.degree.vault.decentralizeddegreevault.dto;
 
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * DTO for degree verification response
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class VerifyDegreeResponse {
-    private String degreeId;
+    private String globalCredentialId;
+    private String universityCode;
+    private String rollNo;
     private String status;
     private String message;
-    private String studentId;
     private String studentName;
     private String fatherName;
     private String department;
     private String cgpa;
-    private String documentHash;
+    private String dataHash;
     private String ipfsCid;
     private String issuerAddress;
     private long issueDate;
@@ -27,4 +27,6 @@ public class VerifyDegreeResponse {
     private boolean authentic;
     private boolean tampered;
     private String integrityMessage;
+    private String verificationUrl;
+    private String qrCodeBase64;
 }

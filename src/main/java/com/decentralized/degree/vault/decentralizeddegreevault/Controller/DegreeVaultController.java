@@ -48,16 +48,16 @@ public class DegreeVaultController {
     public ResponseEntity<TransactionResponse> issueDegree(
             @RequestPart("file") MultipartFile file,
             @RequestPart("data") @Valid IssueDegreeRequest request) {
-        log.info("Received request to issue degree: {}", request.getDegreeId());
+        log.info("Received request to issue degree for GUCI: {}", buildGlobalCredentialId(request.getUniversityCode(), request.getRollNo()));
 
         if (hasMissingIssueFields(request)) {
             return ResponseEntity.badRequest()
-                    .body(new TransactionResponse(null, "ERROR", "All required fields must be non-empty"));
+                    .body(new TransactionResponse(null, "ERROR", "All required fields must be non-empty", null, null, null));
         }
 
         if (file == null || file.isEmpty()) {
             return ResponseEntity.badRequest()
-                    .body(new TransactionResponse(null, "ERROR", "File must not be empty"));
+                    .body(new TransactionResponse(null, "ERROR", "File must not be empty", null, null, null));
         }
 
         TransactionResponse response = degreeVaultService.issueDegree(file, request);
@@ -69,58 +69,20 @@ public class DegreeVaultController {
     }
 
     /**
-     * Verify a degree
-     * POST /api/v1/degrees/verify/{degreeId}
+     * Verify a degree with optional file attachment
+     * POST /api/v1/degrees/verify/{globalCredentialId}
      */
-    @PostMapping(value = "/verify/{degreeId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PostMapping(value = "/verify/{globalCredentialId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<VerifyDegreeResponse> verifyDegree(
-            @PathVariable("degreeId") String degreeId,
-            @RequestPart("file") MultipartFile file) {
-        log.info("Received request to verify degree: {}", degreeId);
+           @PathVariable("globalCredentialId") String globalCredentialId,
+            @RequestPart(value = "file", required = false) MultipartFile file) {
+       log.info("Received request to verify degree for GUCI: {}", globalCredentialId);
 
-        if (isBlank(degreeId)) {
-            return ResponseEntity.badRequest().body(new VerifyDegreeResponse(
-                    null,
-                    "INVALID_REQUEST",
-                    "degreeId path variable is required",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    0,
-                    false,
-                    false,
-                    false,
-                    "Invalid Request"
-            ));
+       if (isBlank(globalCredentialId)) {
+            return ResponseEntity.badRequest().body(VerifyDegreeResponse.builder().status("INVALID_REQUEST").message("globalCredentialId is required").integrityMessage("Invalid Request").build());
         }
 
-        if (file == null || file.isEmpty()) {
-            return ResponseEntity.badRequest().body(new VerifyDegreeResponse(
-                    degreeId,
-                    "INVALID_REQUEST",
-                    "File must not be empty",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    0,
-                    false,
-                    false,
-                    false,
-                    "No file provided for verification."
-            ));
-        }
-
-        VerifyDegreeResponse response = degreeVaultService.verifyDegree(degreeId, file);
+        VerifyDegreeResponse response = degreeVaultService.verifyDegree(globalCredentialId, file);
 
         if ("ERROR".equals(response.getStatus())) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
@@ -131,9 +93,27 @@ public class DegreeVaultController {
     }
 
     /**
+     * Public verification endpoint used by QR links.
+     * GET /api/v1/degrees/verify?id=MUET-22CS001
+     */
+    @GetMapping("/verify")
+    public ResponseEntity<VerifyDegreeResponse> verifyDegreeById(@RequestParam("id") String globalCredentialId) {
+        if (isBlank(globalCredentialId)) {
+            return ResponseEntity.badRequest().body(VerifyDegreeResponse.builder().status("INVALID_REQUEST").message("globalCredentialId is required").integrityMessage("Invalid Request").build());
+        }
+
+        return ResponseEntity.ok(degreeVaultService.verifyDegree(globalCredentialId, null));
+    }
+
+    /**
      * Get university admin address
      * GET /api/v1/degrees/admin
      */
+    @GetMapping("/verify/{globalCredentialId}")
+    public ResponseEntity<VerifyDegreeResponse> verifyDegreeByPath(@PathVariable("globalCredentialId") String globalCredentialId) {
+        return verifyDegreeById(globalCredentialId);
+    }
+
     @GetMapping("/admin")
     public ResponseEntity<String> getUniversityAdmin() {
         log.info("Received request to fetch university admin");
@@ -169,7 +149,7 @@ public class DegreeVaultController {
      * Field: "file" — the CSV file
      * <p>
      * Expected CSV format (with header):
-     * degreeId,studentId,documentHash,ipfsCid
+     * rollNo,studentId,documentHash,ipfsCid
      *
      * @param csvFile the CSV file containing degree records
      * @param zipFile the ZIP file containing degree PDFs
@@ -297,15 +277,22 @@ public class DegreeVaultController {
     // ==================================================================================
 
     private boolean hasMissingIssueFields(IssueDegreeRequest request) {
-        return isBlank(request.getDegreeId())
-                || isBlank(request.getStudentId())
+        return isBlank(request.getUniversityCode())
+                || isBlank(request.getRollNo())
                 || isBlank(request.getStudentName())
-                || isBlank(request.getFatherName())
-                || isBlank(request.getDepartment())
                 || isBlank(request.getCgpa());
+    }
+
+    private String buildGlobalCredentialId(String universityCode, String rollNo) {
+        if (isBlank(universityCode) || isBlank(rollNo)) {
+            return null;
+        }
+        return universityCode.trim() + "-" + rollNo.trim();
     }
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
 }
+
+

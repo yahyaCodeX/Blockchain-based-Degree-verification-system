@@ -86,8 +86,8 @@ public class BatchJobTracker {
             }
         }
 
-        log.debug("Batch {} - Row {} processed: {} (degreeId: {})",
-                batchId, result.getRow(), result.getStatus(), result.getDegreeId());
+        log.debug("Batch {} - Row {} processed: {} (rollNo: {})",
+                batchId, result.getRow(), result.getStatus(), result.getRollNo());
     }
 
     /**
