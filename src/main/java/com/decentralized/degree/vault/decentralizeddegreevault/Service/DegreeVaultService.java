@@ -2,6 +2,7 @@ package com.decentralized.degree.vault.decentralizeddegreevault.Service;
 
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.IssueDegreeRequest;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.TransactionResponse;
+import com.decentralized.degree.vault.decentralizeddegreevault.dto.RevokeDegreeRequest;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.VerifyDegreeResponse;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.DegreeRecord;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.BatchUploadResult;
@@ -63,7 +64,7 @@ public class DegreeVaultService {
     private final BatchJobTracker batchJobTracker;
     private final String verificationBaseUrl;
 
-    @Value("${batch.max-size:100}")
+    @Value("${batch.max-size:25}")
     private int maxBatchSize;
 
     public DegreeVaultService(
@@ -227,12 +228,64 @@ public class DegreeVaultService {
             String department = metadataRecord.map(DegreeRecord::getDepartment).orElse("N/A");
             String ipfsCid = metadataRecord.map(DegreeRecord::getIpfsCid).orElse("N/A");
 
-            boolean authentic = dataHash.equals(metadataRecord.map(DegreeRecord::getDataHash).orElse(dataHash));
-            String status = authentic ? "VERIFIED" : "TAMPERED";
-            String message = authentic ? "Degree verified successfully" : "Document integrity check failed";
-            String integrityMessage = authentic
-                    ? "Credential is authentic. Verified by issuing university on blockchain."
-                    : "Warning: Stored data does not match the official blockchain record.";
+            // Check revocation status (on-chain + database)
+            boolean isRevoked = false;
+            String revocationReason = null;
+            Long revocationDate = null;
+            String revocationTxHash = null;
+
+            try {
+                var revTuple = contract.getRevocationStatus(globalCredentialId).send();
+                if (Boolean.TRUE.equals(revTuple.component1())) {
+                    isRevoked = true;
+                    revocationReason = revTuple.component2();
+                    revocationDate = revTuple.component4().longValue();
+                }
+            } catch (Exception ex) {
+                log.debug("Contract getRevocationStatus call: {}", ex.getMessage());
+            }
+
+            if (metadataRecord.isPresent() && metadataRecord.get().isRevoked()) {
+                isRevoked = true;
+                if (revocationReason == null || revocationReason.isBlank()) {
+                    revocationReason = metadataRecord.get().getRevocationReason();
+                }
+                if (revocationDate == null || revocationDate == 0L) {
+                    revocationDate = metadataRecord.get().getRevocationDate();
+                }
+                revocationTxHash = metadataRecord.get().getRevocationTxHash();
+            }
+
+            boolean hashMatches = dataHash.equals(metadataRecord.map(DegreeRecord::getDataHash).orElse(dataHash));
+            String status;
+            String message;
+            String integrityMessage;
+            boolean authentic;
+            boolean verified;
+            boolean tampered;
+
+            if (isRevoked) {
+                status = "REVOKED";
+                authentic = false;
+                verified = false;
+                tampered = false;
+                message = "DEGREE REVOKED: This degree has been officially revoked by the university registrar.";
+                integrityMessage = "Official Revocation Reason: " + (revocationReason != null && !revocationReason.isBlank() ? revocationReason : "Revoked by issuing authority");
+            } else if (hashMatches) {
+                status = "VERIFIED";
+                authentic = true;
+                verified = true;
+                tampered = false;
+                message = "Degree verified successfully";
+                integrityMessage = "Credential is authentic. Verified by issuing university on blockchain.";
+            } else {
+                status = "TAMPERED";
+                authentic = false;
+                verified = true;
+                tampered = true;
+                message = "Document integrity check failed";
+                integrityMessage = "Warning: Stored data does not match the official blockchain record.";
+            }
 
             String verificationUrl = buildVerificationUrl(globalCredentialId);
             String qrBase64 = authentic ? generateQrCode(verificationUrl) : null;
@@ -251,12 +304,16 @@ public class DegreeVaultService {
                     .issueDate(issueDateLong)
                     .status(status)
                     .message(message)
-                    .verified(true)
+                    .verified(verified)
                     .authentic(authentic)
-                    .tampered(!authentic)
+                    .tampered(tampered)
                     .integrityMessage(integrityMessage)
                     .verificationUrl(verificationUrl)
                     .qrCodeBase64(qrBase64)
+                    .revoked(isRevoked)
+                    .revocationReason(revocationReason)
+                    .revocationDate(revocationDate)
+                    .revocationTxHash(revocationTxHash)
                     .build();
         } catch (Exception e) {
             log.error("Error verifying degree {}: {}", globalCredentialId, e.getMessage(), e);
@@ -512,23 +569,34 @@ public class DegreeVaultService {
             );
 
             // Build parallel arrays for the smart contract call
+            List<String> globalCredentialIds = new ArrayList<>();
+            List<String> universityCodes = new ArrayList<>();
             List<String> rollNos = new ArrayList<>();
-            List<String> studentIds = new ArrayList<>();
-            List<String> docHashes = new ArrayList<>();
-            List<String> ipfsCids = new ArrayList<>();
+            List<String> studentNames = new ArrayList<>();
+            List<String> cgpAs = new ArrayList<>();
+            List<String> dataHashes = new ArrayList<>();
 
             for (IssueDegreeRequest deg : degrees) {
-                rollNos.add(deg.getRollNo());
-                studentIds.add(deg.getStudentId());
-                docHashes.add(deg.getDocumentHash());
-                ipfsCids.add(deg.getIpfsCid());
+                String uniCode = (deg.getUniversityCode() != null && !deg.getUniversityCode().isBlank())
+                        ? deg.getUniversityCode().trim().toUpperCase() : "MUET";
+                String roll = deg.getRollNo().trim().toUpperCase();
+                String guci = buildGlobalCredentialId(uniCode, roll);
+                String dataHash = calculateDataHash(uniCode, roll, deg.getStudentName(), deg.getCgpa());
+                deg.setDocumentHash(dataHash);
+
+                globalCredentialIds.add(guci);
+                universityCodes.add(uniCode);
+                rollNos.add(roll);
+                studentNames.add(deg.getStudentName());
+                cgpAs.add(deg.getCgpa());
+                dataHashes.add(dataHash);
             }
 
             log.info("Issuing batch of {} degrees on-chain", degrees.size());
 
-            // Call the issueBatch() function on the smart contract
+            // Call the 6-parameter issueBatch() function on the smart contract
             RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
-                    contract.issueBatch(rollNos, studentIds, docHashes, ipfsCids);
+                    contract.issueBatch(globalCredentialIds, universityCodes, rollNos, studentNames, cgpAs, dataHashes);
 
             var transactionReceipt = txFunction.send();
 
@@ -579,12 +647,21 @@ public class DegreeVaultService {
                     gasProvider
             );
 
+            String uniCode = (request.getUniversityCode() != null && !request.getUniversityCode().isBlank())
+                    ? request.getUniversityCode().trim().toUpperCase() : "MUET";
+            String roll = request.getRollNo().trim().toUpperCase();
+            String guci = buildGlobalCredentialId(uniCode, roll);
+            String dataHash = calculateDataHash(uniCode, roll, request.getStudentName(), request.getCgpa());
+            request.setDocumentHash(dataHash);
+
             RemoteFunctionCall<org.web3j.protocol.core.methods.response.TransactionReceipt> txFunction =
                     contract.issueDegree(
-                            request.getRollNo(),
-                            request.getStudentId(),
-                            request.getDocumentHash(),
-                            request.getIpfsCid()
+                            guci,
+                            uniCode,
+                            roll,
+                            request.getStudentName(),
+                            request.getCgpa(),
+                            dataHash
                     );
 
             var transactionReceipt = txFunction.send();
@@ -652,12 +729,23 @@ public class DegreeVaultService {
                 }
 
                 IssueDegreeRequest request = new IssueDegreeRequest();
-                request.setRollNo(columns[0].trim());
-                request.setStudentId(columns[1].trim());
-                request.setStudentName(columns[2].trim());
-                request.setFatherName(columns[3].trim());
-                request.setDepartment(columns[4].trim());
-                request.setCgpa(columns[5].trim());
+                if (columns.length >= 7) {
+                    request.setUniversityCode(columns[0].trim().toUpperCase());
+                    request.setRollNo(columns[1].trim().toUpperCase());
+                    request.setStudentId(columns[2].trim());
+                    request.setStudentName(columns[3].trim());
+                    request.setFatherName(columns[4].trim());
+                    request.setDepartment(columns[5].trim());
+                    request.setCgpa(columns[6].trim());
+                } else {
+                    request.setUniversityCode("MUET");
+                    request.setRollNo(columns[0].trim().toUpperCase());
+                    request.setStudentId(columns[1].trim());
+                    request.setStudentName(columns[2].trim());
+                    request.setFatherName(columns[3].trim());
+                    request.setDepartment(columns[4].trim());
+                    request.setCgpa(columns[5].trim());
+                }
 
                 degrees.add(request);
             }
@@ -744,10 +832,15 @@ public class DegreeVaultService {
 
     private void saveDegreeToDatabase(IssueDegreeRequest request, String issuerAddress) {
         try {
+            String uniCode = (request.getUniversityCode() != null && !request.getUniversityCode().isBlank())
+                    ? request.getUniversityCode().trim().toUpperCase() : "MUET";
+            String roll = request.getRollNo().trim().toUpperCase();
+            String guci = buildGlobalCredentialId(uniCode, roll);
+
             DegreeRecord record = new DegreeRecord(
-                    buildGlobalCredentialId("LEGACY", request.getRollNo()),
-                    "LEGACY",
-                    request.getRollNo(),
+                    guci,
+                    uniCode,
+                    roll,
                     request.getStudentName(),
                     request.getCgpa(),
                     request.getDocumentHash(),
@@ -788,6 +881,68 @@ public class DegreeVaultService {
         }
     }
 
+    public List<DegreeRecord> getAllDegrees() {
+        return degreeRecordRepository.findAllByOrderByIssueDateDesc();
+    }
+
+    public List<DegreeRecord> searchDegrees(String query) {
+        if (query == null || query.trim().isEmpty()) {
+            return getAllDegrees();
+        }
+        return degreeRecordRepository.searchDegrees(query.trim());
+    }
+
+    public BigInteger getRevokedCount() {
+        try {
+            Credentials credentials = Credentials.create(privateKey);
+            DegreeVault contract = DegreeVault.load(contractAddress, web3j, credentials, gasProvider);
+            return contract.getRevokedCount().send();
+        } catch (Exception e) {
+            log.debug("Could not fetch on-chain revoked count: {}", e.getMessage());
+            return BigInteger.valueOf(degreeRecordRepository.countByIsRevokedTrue());
+        }
+    }
+
+    public TransactionResponse revokeDegree(RevokeDegreeRequest request) {
+        String guci = request.getGlobalCredentialId().trim().toUpperCase();
+        String reason = request.getReason().trim();
+
+        log.info("Initiating on-chain revocation for GUCI: {} with reason: {}", guci, reason);
+
+        try {
+            Credentials credentials = Credentials.create(privateKey);
+            String issuerAddress = credentials.getAddress();
+            DegreeVault contract = DegreeVault.load(contractAddress, web3j, credentials, gasProvider);
+
+            // Execute on-chain revocation transaction
+            var txReceipt = contract.revokeDegree(guci, reason).send();
+
+            if (!txReceipt.isStatusOK()) {
+                return new TransactionResponse(txReceipt.getTransactionHash(), "FAILED", "On-chain revocation transaction failed", issuerAddress);
+            }
+
+            String txHash = txReceipt.getTransactionHash();
+
+            // Update local database record
+            Optional<DegreeRecord> opt = degreeRecordRepository.findById(guci);
+            if (opt.isPresent()) {
+                DegreeRecord record = opt.get();
+                record.setRevoked(true);
+                record.setRevocationReason(reason);
+                record.setRevocationDate(System.currentTimeMillis() / 1000);
+                record.setRevocationTxHash(txHash);
+                degreeRecordRepository.save(record);
+            }
+
+            log.info("Degree {} successfully revoked on blockchain with tx: {}", guci, txHash);
+            return new TransactionResponse(txHash, "SUCCESS", "Degree revoked successfully on blockchain", issuerAddress);
+
+        } catch (Exception e) {
+            log.error("Error revoking degree {}: {}", guci, e.getMessage(), e);
+            return new TransactionResponse(null, "ERROR", "Failed to revoke degree: " + e.getMessage());
+        }
+    }
+
     /**
      * Gets the maximum batch size allowed by the smart contract.
      *
@@ -812,5 +967,6 @@ public class DegreeVaultService {
         }
     }
 }
+
 
 

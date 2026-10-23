@@ -5,6 +5,9 @@ import com.decentralized.degree.vault.decentralizeddegreevault.Service.DegreeVau
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.BatchStatusResponse;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.IssueDegreeRequest;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.TransactionResponse;
+import com.decentralized.degree.vault.decentralizeddegreevault.dto.RevokeDegreeRequest;
+import com.decentralized.degree.vault.decentralizeddegreevault.dto.DegreeRecord;
+import org.springframework.web.bind.annotation.RequestBody;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.VerifyDegreeResponse;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -256,19 +259,52 @@ public class DegreeVaultController {
         try {
             BigInteger totalDegrees = degreeVaultService.getDegreeCount();
             BigInteger maxBatchSize = degreeVaultService.getBatchSize();
+            BigInteger totalRevoked = degreeVaultService.getRevokedCount();
+            int total = totalDegrees != null ? totalDegrees.intValue() : 0;
+            int revoked = totalRevoked != null ? totalRevoked.intValue() : 0;
+            int active = Math.max(0, total - revoked);
 
             Map<String, Object> stats = new HashMap<>();
-            stats.put("totalDegreesIssued", totalDegrees.intValue());
-            stats.put("maxBatchSize", maxBatchSize.intValue());
+            stats.put("totalDegreesIssued", total);
+            stats.put("maxBatchSize", maxBatchSize != null ? maxBatchSize.intValue() : 100);
+            stats.put("totalRevoked", revoked);
+            stats.put("activeDegrees", active);
 
             return ResponseEntity.ok(stats);
-
         } catch (Exception e) {
             log.error("Error fetching stats: {}", e.getMessage(), e);
             Map<String, Object> errorResponse = new HashMap<>();
             errorResponse.put("error", "Failed to fetch stats");
             errorResponse.put("message", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+
+    
+    // ==================================================================================
+    // DEGREE LEDGER & REVOCATION ENDPOINTS
+    // ==================================================================================
+
+    @GetMapping("/all")
+    public ResponseEntity<java.util.List<DegreeRecord>> getAllDegrees() {
+        log.info("Received request to fetch all degree records");
+        return ResponseEntity.ok(degreeVaultService.getAllDegrees());
+    }
+
+    @GetMapping("/search")
+    public ResponseEntity<java.util.List<DegreeRecord>> searchDegrees(@RequestParam("q") String query) {
+        log.info("Received request to search degrees with query: {}", query);
+        return ResponseEntity.ok(degreeVaultService.searchDegrees(query));
+    }
+
+    @PostMapping("/revoke")
+    public ResponseEntity<TransactionResponse> revokeDegree(@RequestBody RevokeDegreeRequest request) {
+        log.info("Received request to revoke degree: {}", request.getGlobalCredentialId());
+        TransactionResponse response = degreeVaultService.revokeDegree(request);
+        if ("SUCCESS".equals(response.getStatus())) {
+            return ResponseEntity.ok(response);
+        } else {
+            return ResponseEntity.badRequest().body(response);
         }
     }
 
@@ -294,5 +330,6 @@ public class DegreeVaultController {
         return value == null || value.trim().isEmpty();
     }
 }
+
 
 

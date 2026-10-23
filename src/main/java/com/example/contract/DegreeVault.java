@@ -9,6 +9,8 @@ import org.web3j.crypto.Credentials;
 import org.web3j.protocol.Web3j;
 import org.web3j.protocol.core.RemoteFunctionCall;
 import org.web3j.protocol.core.methods.response.TransactionReceipt;
+import org.web3j.abi.datatypes.Bool;
+import org.web3j.tuples.generated.Tuple4;
 import org.web3j.tuples.generated.Tuple8;
 import org.web3j.tx.Contract;
 import org.web3j.tx.TransactionManager;
@@ -28,6 +30,9 @@ public class DegreeVault extends Contract {
     private static final String FUNC_GETDEGREECOUNT = "getDegreeCount";
     private static final String FUNC_GETBATCHSIZE = "getBatchSize";
     private static final String FUNC_UNIVERSITYADMIN = "universityAdmin";
+    private static final String FUNC_REVOKEDEGREE = "revokeDegree";
+    private static final String FUNC_GETREVOCATIONSTATUS = "getRevocationStatus";
+    private static final String FUNC_GETREVOKEDCOUNT = "getRevokedCount";
 
     protected DegreeVault(String contractAddress, Web3j web3j, Credentials credentials, ContractGasProvider gasProvider) {
         super(BINARY, contractAddress, web3j, credentials, gasProvider);
@@ -164,8 +169,49 @@ public class DegreeVault extends Contract {
         return executeRemoteCallSingleValueReturn(function, String.class);
     }
 
+    public RemoteFunctionCall<TransactionReceipt> revokeDegree(String globalCredentialId, String reason) {
+        Function function = new Function(
+                FUNC_REVOKEDEGREE,
+                List.of(new Utf8String(globalCredentialId), new Utf8String(reason)),
+                List.of()
+        );
+        return executeRemoteCallTransaction(function);
+    }
+
+    public RemoteFunctionCall<Tuple4<Boolean, String, String, BigInteger>> getRevocationStatus(String globalCredentialId) {
+        Function function = new Function(
+                FUNC_GETREVOCATIONSTATUS,
+                List.of(new Utf8String(globalCredentialId)),
+                List.of(
+                        new org.web3j.abi.TypeReference<Bool>() {},
+                        new org.web3j.abi.TypeReference<Utf8String>() {},
+                        new org.web3j.abi.TypeReference<org.web3j.abi.datatypes.Address>() {},
+                        new org.web3j.abi.TypeReference<Uint256>() {}
+                )
+        );
+        return new RemoteFunctionCall<>(function, () -> {
+            List<Type> results = executeCallMultipleValueReturn(function);
+            return new Tuple4<>(
+                    (Boolean) results.get(0).getValue(),
+                    (String) results.get(1).getValue(),
+                    (String) results.get(2).getValue(),
+                    (BigInteger) results.get(3).getValue()
+            );
+        });
+    }
+
+    public RemoteFunctionCall<BigInteger> getRevokedCount() {
+        Function function = new Function(
+                FUNC_GETREVOKEDCOUNT,
+                List.of(),
+                List.of(new org.web3j.abi.TypeReference<Uint256>() {})
+        );
+        return executeRemoteCallSingleValueReturn(function, BigInteger.class);
+    }
+
     private static List<Utf8String> wrapUtf8Strings(List<String> values) {
         return values.stream().map(Utf8String::new).collect(Collectors.toCollection(ArrayList::new));
     }
 }
+
 

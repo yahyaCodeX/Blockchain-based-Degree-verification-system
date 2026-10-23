@@ -29,4 +29,9 @@ public class VerifyDegreeResponse {
     private String integrityMessage;
     private String verificationUrl;
     private String qrCodeBase64;
+    private boolean revoked;
+    private String revocationReason;
+    private Long revocationDate;
+    private String revocationTxHash;
 }
+

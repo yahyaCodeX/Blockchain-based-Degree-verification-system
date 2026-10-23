@@ -26,6 +26,10 @@ public class DegreeRecord {
     private String ipfsCid;
     private String issuerAddress;
     private long issueDate;
+    private boolean isRevoked = false;
+    private String revocationReason;
+    private Long revocationDate;
+    private String revocationTxHash;
 
     public DegreeRecord(
             String globalCredentialId,
@@ -85,3 +89,4 @@ public class DegreeRecord {
         }
     }
 }
+

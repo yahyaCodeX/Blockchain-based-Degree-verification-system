@@ -77,6 +77,12 @@ public class SecurityConfig {
                         // University admin address
                         .requestMatchers(HttpMethod.GET, "/api/v1/degrees/admin").hasRole("ADMIN")
 
+                        // Degree Ledger, Search & Revocation
+                        .requestMatchers(HttpMethod.GET, "/api/v1/degrees/all").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/degrees/search").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/degrees/revoke").hasRole("ADMIN")
+                        .requestMatchers("/error").permitAll()
+
                         // ── Everything else requires authentication ──────
                         .anyRequest().authenticated()
                 )
