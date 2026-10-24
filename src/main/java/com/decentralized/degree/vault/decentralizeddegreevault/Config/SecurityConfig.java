@@ -55,8 +55,9 @@ public class SecurityConfig {
                         // Authentication (login / register)
                         .requestMatchers("/api/v1/auth/**").permitAll()
 
-                        // Degree verification — employers verify without login
+                        // Degree verification & Student Portal — verify without login
                         .requestMatchers("/api/v1/degrees/verify", "/api/v1/degrees/verify/**").permitAll()
+                        .requestMatchers("/api/v1/degrees/student/**").permitAll()
 
                         // Health check
                         .requestMatchers("/api/v1/degrees/health").permitAll()

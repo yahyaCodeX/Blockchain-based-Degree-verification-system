@@ -25,4 +25,6 @@ public interface DegreeRecordRepository extends JpaRepository<DegreeRecord, Stri
     long countByIsRevokedFalse();
 
     long countByIsRevokedTrue();
+
+    java.util.Optional<DegreeRecord> findByRollNoIgnoreCase(String rollNo);
 }

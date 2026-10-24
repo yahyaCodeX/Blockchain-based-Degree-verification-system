@@ -193,23 +193,37 @@ public class DegreeVaultService {
         }
     }
 
+    public VerifyDegreeResponse getStudentDegree(String query) {
+        return verifyDegree(query, null);
+    }
+
     /**
-     * Verifies a degree using its GUCI.
+     * Verifies a degree using its GUCI or Roll Number.
      */
     public VerifyDegreeResponse verifyDegree(String globalCredentialId, MultipartFile file) {
         try {
+            String targetGuci = globalCredentialId != null ? globalCredentialId.trim().toUpperCase() : "";
+            if (!targetGuci.contains("-") && !targetGuci.isBlank()) {
+                Optional<DegreeRecord> byRoll = degreeRecordRepository.findByRollNoIgnoreCase(targetGuci);
+                if (byRoll.isPresent()) {
+                    targetGuci = byRoll.get().getGlobalCredentialId();
+                } else {
+                    targetGuci = "MUET-" + targetGuci;
+                }
+            }
+
             Credentials credentials = Credentials.create(privateKey);
             DegreeVault contract = DegreeVault.load(contractAddress, web3j, credentials, gasProvider);
 
             RemoteFunctionCall<Tuple8<String, String, String, String, String, String, String, BigInteger>> txFunction =
-                    contract.verifyDegree(globalCredentialId);
+                    contract.verifyDegree(targetGuci);
 
             Tuple8<String, String, String, String, String, String, String, BigInteger> result;
             try {
                 result = txFunction.send();
             } catch (ContractCallException ex) {
                 if (isDegreeNotFoundRevert(ex)) {
-                    return buildUnverifiedResponse(globalCredentialId, "Degree not found on blockchain");
+                    return buildUnverifiedResponse(targetGuci, "Degree not found on blockchain");
                 }
                 throw ex;
             }

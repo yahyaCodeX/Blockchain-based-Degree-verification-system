@@ -117,6 +117,18 @@ public class DegreeVaultController {
         return verifyDegreeById(globalCredentialId);
     }
 
+    /**
+     * Public student portal endpoint for looking up degrees by Roll Number or GUCI.
+     * GET /api/v1/degrees/student/{query}
+     */
+    @GetMapping("/student/{query}")
+    public ResponseEntity<VerifyDegreeResponse> getStudentDegree(@PathVariable("query") String query) {
+        if (isBlank(query)) {
+            return ResponseEntity.badRequest().body(VerifyDegreeResponse.builder().status("INVALID_REQUEST").message("Student Roll Number or GUCI is required").build());
+        }
+        return ResponseEntity.ok(degreeVaultService.getStudentDegree(query));
+    }
+
     @GetMapping("/admin")
     public ResponseEntity<String> getUniversityAdmin() {
         log.info("Received request to fetch university admin");
