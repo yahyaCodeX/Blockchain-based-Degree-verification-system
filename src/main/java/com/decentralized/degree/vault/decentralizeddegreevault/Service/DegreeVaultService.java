@@ -6,11 +6,16 @@ import com.decentralized.degree.vault.decentralizeddegreevault.dto.RevokeDegreeR
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.VerifyDegreeResponse;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.DegreeRecord;
 import com.decentralized.degree.vault.decentralizeddegreevault.dto.BatchUploadResult;
+import com.decentralized.degree.vault.decentralizeddegreevault.dto.StudentLoginRequest;
+import com.decentralized.degree.vault.decentralizeddegreevault.dto.StudentLoginResponse;
 import com.decentralized.degree.vault.decentralizeddegreevault.util.FileHashingUtil;
+import com.decentralized.degree.vault.decentralizeddegreevault.util.JwtUtil;
 import com.decentralized.degree.vault.decentralizeddegreevault.util.QrCodeUtil;
 import com.decentralized.degree.vault.decentralizeddegreevault.repository.DegreeRecordRepository;
 import com.example.contract.DegreeVault;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -63,6 +68,18 @@ public class DegreeVaultService {
     private final PinataService pinataService;
     private final BatchJobTracker batchJobTracker;
     private final String verificationBaseUrl;
+
+    @Autowired(required = false)
+    private EmailNotificationService emailNotificationService;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    @Autowired
+    private LoginRateLimiterService rateLimiterService;
 
     @Value("${batch.max-size:25}")
     private int maxBatchSize;
@@ -161,7 +178,25 @@ public class DegreeVaultService {
                 record.setStudentId(request.getStudentId());
                 record.setFatherName(request.getFatherName());
                 record.setDepartment(request.getDepartment());
+
+                String email = (request.getStudentEmail() != null && !request.getStudentEmail().isBlank())
+                        ? request.getStudentEmail().trim() : request.getRollNo().trim().toLowerCase() + "@student." + request.getUniversityCode().trim().toLowerCase() + ".edu.pk";
+                String pin = (request.getStudentPin() != null && !request.getStudentPin().isBlank())
+                        ? request.getStudentPin().trim() : String.format("%06d", new java.security.SecureRandom().nextInt(1000000));
+
+                record.setStudentEmail(email);
+                record.setStudentPin(pin);
                 degreeRecordRepository.save(record);
+
+                if (emailNotificationService != null) {
+                    try {
+                        emailNotificationService.sendStudentVaultCredentials(
+                                email, request.getStudentName(), request.getRollNo(), globalCredentialId, pin, request.getUniversityCode(), request.getDepartment()
+                        );
+                    } catch (Exception ex) {
+                        log.warn("Email notification failed: {}", ex.getMessage());
+                    }
+                }
 
                 String verificationUrl = buildVerificationUrl(globalCredentialId);
                 return new TransactionResponse(
@@ -195,6 +230,82 @@ public class DegreeVaultService {
 
     public VerifyDegreeResponse getStudentDegree(String query) {
         return verifyDegree(query, null);
+    }
+
+    public StudentLoginResponse studentLogin(StudentLoginRequest request) {
+        String identifier = request.getIdentifier().trim();
+        String pin = request.getPin().trim();
+
+        // 1. Check Brute-Force Rate Limiting Lockout
+        if (rateLimiterService.isLocked(identifier)) {
+            long remaining = rateLimiterService.getRemainingLockoutMinutes(identifier);
+            throw new IllegalStateException("Security Lockout: Too many failed PIN attempts. Account locked for " + remaining + " minute(s) to protect student privacy.");
+        }
+
+        // 2. Database Lookup by Roll Number or Email
+        Optional<DegreeRecord> opt = degreeRecordRepository.findByIdentifier(identifier);
+        if (opt.isEmpty()) {
+            rateLimiterService.recordFailedAttempt(identifier);
+            throw new IllegalArgumentException("No student credential found for: " + identifier);
+        }
+
+        DegreeRecord record = opt.get();
+
+        // Auto-backfill for legacy records if PIN was not set
+        if (record.getStudentPin() == null || record.getStudentPin().isBlank()) {
+            String seed = record.getGlobalCredentialId() != null ? record.getGlobalCredentialId() : record.getRollNo();
+            String autoPin = String.format("%06d", Math.abs(seed.hashCode() % 900000) + 100000);
+            record.setStudentPin(autoPin);
+            if (record.getStudentEmail() == null || record.getStudentEmail().isBlank()) {
+                record.setStudentEmail(record.getRollNo().toLowerCase() + "@student." + (record.getUniversityCode() != null ? record.getUniversityCode().toLowerCase() : "muet") + ".edu.pk");
+            }
+            degreeRecordRepository.save(record);
+        }
+
+        // 3. Confidential 6-Digit PIN Verification (Supports both plain PIN and BCrypt hash)
+        String storedPin = record.getStudentPin();
+        boolean matches = false;
+        if (storedPin != null) {
+            if (storedPin.startsWith("$2a$") || storedPin.startsWith("$2b$") || storedPin.startsWith("$2y$")) {
+                matches = passwordEncoder.matches(pin, storedPin);
+            } else {
+                matches = storedPin.trim().equals(pin.trim());
+            }
+        }
+
+        if (!matches) {
+            int attempts = rateLimiterService.recordFailedAttempt(identifier);
+            int remaining = 5 - attempts;
+            if (remaining > 0) {
+                throw new SecurityException("Invalid Student Access PIN. " + remaining + " attempt(s) remaining before security lockout.");
+            } else {
+                throw new IllegalStateException("Security Lockout: Account locked for 15 minutes due to 5 consecutive failed PIN attempts.");
+            }
+        }
+
+        // 4. Successful Authentication -> Clear Rate Limiter
+        rateLimiterService.recordSuccessfulLogin(identifier);
+
+        // 5. Fetch Degree & Blockchain State
+        VerifyDegreeResponse degreeResponse = verifyDegree(record.getGlobalCredentialId(), null);
+        degreeResponse.setStudentEmail(record.getStudentEmail());
+        degreeResponse.setStudentPin("******"); // Mask PIN in output for security
+
+        // 6. Generate Signed Student JWT Token (Valid for 24 hours)
+        String token = jwtUtil.generateStudentToken(
+                record.getRollNo(),
+                record.getStudentEmail(),
+                record.getUniversityCode(),
+                record.getGlobalCredentialId()
+        );
+
+        return StudentLoginResponse.builder()
+                .token(token)
+                .tokenType("Bearer")
+                .expiresIn(jwtUtil.getExpirationMs())
+                .role("ROLE_STUDENT")
+                .degree(degreeResponse)
+                .build();
     }
 
     /**
@@ -328,6 +439,8 @@ public class DegreeVaultService {
                     .revocationReason(revocationReason)
                     .revocationDate(revocationDate)
                     .revocationTxHash(revocationTxHash)
+                    .studentEmail(metadataRecord.map(DegreeRecord::getStudentEmail).orElse(null))
+                    .studentPin(metadataRecord.map(DegreeRecord::getStudentPin).orElse(null))
                     .build();
         } catch (Exception e) {
             log.error("Error verifying degree {}: {}", globalCredentialId, e.getMessage(), e);
@@ -865,7 +978,25 @@ public class DegreeVaultService {
             record.setStudentId(request.getStudentId());
             record.setFatherName(request.getFatherName());
             record.setDepartment(request.getDepartment());
+
+            String email = (request.getStudentEmail() != null && !request.getStudentEmail().isBlank())
+                    ? request.getStudentEmail().trim() : roll.toLowerCase() + "@student." + uniCode.toLowerCase() + ".edu.pk";
+            String pin = (request.getStudentPin() != null && !request.getStudentPin().isBlank())
+                    ? request.getStudentPin().trim() : String.format("%06d", new java.security.SecureRandom().nextInt(1000000));
+
+            record.setStudentEmail(email);
+            record.setStudentPin(pin);
             degreeRecordRepository.save(record);
+
+            if (emailNotificationService != null) {
+                try {
+                    emailNotificationService.sendStudentVaultCredentials(
+                            email, request.getStudentName(), roll, guci, pin, uniCode, request.getDepartment()
+                    );
+                } catch (Exception ex) {
+                    log.warn("Batch email notification failed for {}: {}", roll, ex.getMessage());
+                }
+            }
         } catch (Exception e) {
             log.error("Failed to save degree metadata to DB for roll number {}: {}", request.getRollNo(), e.getMessage());
         }
@@ -896,7 +1027,18 @@ public class DegreeVaultService {
     }
 
     public List<DegreeRecord> getAllDegrees() {
-        return degreeRecordRepository.findAllByOrderByIssueDateDesc();
+        List<DegreeRecord> list = degreeRecordRepository.findAllByOrderByIssueDateDesc();
+        for (DegreeRecord r : list) {
+            if (r.getStudentPin() == null || r.getStudentPin().isBlank()) {
+                String seed = r.getGlobalCredentialId() != null ? r.getGlobalCredentialId() : r.getRollNo();
+                r.setStudentPin(String.format("%06d", Math.abs(seed.hashCode() % 900000) + 100000));
+                if (r.getStudentEmail() == null || r.getStudentEmail().isBlank()) {
+                    r.setStudentEmail(r.getRollNo().toLowerCase() + "@student." + (r.getUniversityCode() != null ? r.getUniversityCode().toLowerCase() : "muet") + ".edu.pk");
+                }
+                degreeRecordRepository.save(r);
+            }
+        }
+        return list;
     }
 
     public List<DegreeRecord> searchDegrees(String query) {

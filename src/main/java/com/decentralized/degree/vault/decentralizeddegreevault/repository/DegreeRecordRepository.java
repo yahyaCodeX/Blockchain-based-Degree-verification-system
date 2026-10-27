@@ -27,4 +27,10 @@ public interface DegreeRecordRepository extends JpaRepository<DegreeRecord, Stri
     long countByIsRevokedTrue();
 
     java.util.Optional<DegreeRecord> findByRollNoIgnoreCase(String rollNo);
+
+    @Query("SELECT d FROM DegreeRecord d WHERE " +
+           "LOWER(d.globalCredentialId) = LOWER(:id) OR " +
+           "LOWER(d.rollNo) = LOWER(:id) OR " +
+           "LOWER(d.studentEmail) = LOWER(:id)")
+    java.util.Optional<DegreeRecord> findByIdentifier(@Param("id") String id);
 }

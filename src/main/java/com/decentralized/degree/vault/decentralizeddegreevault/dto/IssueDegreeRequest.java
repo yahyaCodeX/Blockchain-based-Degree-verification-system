@@ -33,6 +33,8 @@ public class IssueDegreeRequest {
 
     private String fatherName;
     private String department;
+    private String studentEmail;
+    private String studentPin;
 
     private String documentHash;
 

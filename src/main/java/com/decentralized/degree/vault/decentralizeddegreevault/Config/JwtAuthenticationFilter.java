@@ -59,26 +59,44 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         try {
             // ── 2. Parse the token and extract the email ─────────────────
-            final String userEmail = jwtUtil.extractUsername(jwt);
+            final String subject = jwtUtil.extractUsername(jwt);
 
             // ── 3. Authenticate if not already set in SecurityContext ────
-            if (userEmail != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            if (subject != null && SecurityContextHolder.getContext().getAuthentication() == null) {
 
-                UserDetails userDetails = userDetailsService.loadUserByUsername(userEmail);
+                var claims = jwtUtil.extractAllClaims(jwt);
+                String roles = (String) claims.get("roles");
 
-                if (jwtUtil.isTokenValid(jwt, userDetails)) {
+                // Check for Student JWT token
+                if (roles != null && roles.contains("ROLE_STUDENT") && !jwtUtil.isTokenExpired(jwt)) {
                     UsernamePasswordAuthenticationToken authToken =
                             new UsernamePasswordAuthenticationToken(
-                                    userDetails,
+                                    subject,
                                     null,
-                                    userDetails.getAuthorities()
+                                    java.util.Collections.singletonList(
+                                            new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_STUDENT")
+                                    )
                             );
-
-                    authToken.setDetails(
-                            new WebAuthenticationDetailsSource().buildDetails(request)
-                    );
-
+                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(authToken);
+                } else {
+                    // Admin / Staff user authenticated via UserDetails
+                    UserDetails userDetails = userDetailsService.loadUserByUsername(subject);
+
+                    if (jwtUtil.isTokenValid(jwt, userDetails)) {
+                        UsernamePasswordAuthenticationToken authToken =
+                                new UsernamePasswordAuthenticationToken(
+                                        userDetails,
+                                        null,
+                                        userDetails.getAuthorities()
+                                );
+
+                        authToken.setDetails(
+                                new WebAuthenticationDetailsSource().buildDetails(request)
+                        );
+
+                        SecurityContextHolder.getContext().setAuthentication(authToken);
+                    }
                 }
             }
         } catch (Exception e) {

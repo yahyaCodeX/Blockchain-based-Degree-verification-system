@@ -30,6 +30,9 @@ public class DegreeRecord {
     private String revocationReason;
     private Long revocationDate;
     private String revocationTxHash;
+    private String studentEmail;
+    private String studentPin;
+    private boolean emailSent = false;
 
     public DegreeRecord(
             String globalCredentialId,

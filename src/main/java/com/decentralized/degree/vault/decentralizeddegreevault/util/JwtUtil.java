@@ -83,6 +83,25 @@ public class JwtUtil {
         return buildToken(extraClaims, userDetails.getUsername());
     }
 
+    /**
+     * Generates a signed JWT specifically for an authenticated student.
+     * Contains ROLE_STUDENT authority and student identity claims.
+     */
+    public String generateStudentToken(String rollNo, String email, String universityCode, String guci) {
+        Map<String, Object> extraClaims = new HashMap<>();
+        extraClaims.put("roles", "ROLE_STUDENT");
+        extraClaims.put("rollNo", rollNo);
+        extraClaims.put("email", email);
+        extraClaims.put("university", universityCode);
+        extraClaims.put("guci", guci);
+
+        return buildToken(extraClaims, rollNo);
+    }
+
+    public long getExpirationMs() {
+        return expirationMs;
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     //  Token Extraction
     // ────────────────────────────────────────────────────────────────────────

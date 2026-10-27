@@ -129,6 +129,27 @@ public class DegreeVaultController {
         return ResponseEntity.ok(degreeVaultService.getStudentDegree(query));
     }
 
+    /**
+     * Official MIT-style Student Vault PIN-protected authentication endpoint.
+     * POST /api/v1/degrees/student/login
+     */
+    @PostMapping("/student/login")
+    public ResponseEntity<?> studentLogin(@Valid @RequestBody com.decentralized.degree.vault.decentralizeddegreevault.dto.StudentLoginRequest request) {
+        try {
+            com.decentralized.degree.vault.decentralizeddegreevault.dto.StudentLoginResponse response = degreeVaultService.studentLogin(request);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("status", "NOT_FOUND", "message", e.getMessage()));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("status", "UNAUTHORIZED", "message", e.getMessage()));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of("status", "LOCKED", "message", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Student login failed: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", "ERROR", "message", "Internal error during authentication: " + e.getMessage()));
+        }
+    }
+
     @GetMapping("/admin")
     public ResponseEntity<String> getUniversityAdmin() {
         log.info("Received request to fetch university admin");

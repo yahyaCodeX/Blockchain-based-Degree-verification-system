@@ -33,5 +33,7 @@ public class VerifyDegreeResponse {
     private String revocationReason;
     private Long revocationDate;
     private String revocationTxHash;
+    private String studentEmail;
+    private String studentPin;
 }
 
